@@ -37,6 +37,7 @@
   border-color: var(--interactive-accent);
 }
 
+
 .sk-tab-panel {
   flex: 1;
   display: flex;
@@ -131,6 +132,40 @@
   gap: 12px;
 }
 
+.sk-range-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.sk-range-select {
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+}
+
+.sk-range-custom {
+  display: none;
+  align-items: center;
+  gap: 6px;
+}
+
+.sk-range-custom-visible {
+  display: inline-flex;
+}
+
+.sk-range-custom input {
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+}
+
 .sk-stat-card {
   background: var(--background-secondary);
   border-radius: 10px;
@@ -167,6 +202,11 @@
 
 .sk-chart {
   width: 100%;
+  position: relative;
+}
+
+.sk-chart-scroll {
+  overflow-x: auto;
 }
 
 .sk-chart-bars {
@@ -244,6 +284,31 @@
   height: 160px;
   background: var(--background-primary);
   border-radius: 6px;
+}
+
+.sk-chart-tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  font-size: 11px;
+  padding: 4px 8px;
+  color: var(--text-normal);
+  transform: translate(-50%, -100%);
+  opacity: 0;
+  transition: opacity 0.1s ease;
+  box-shadow: var(--shadow-s);
+  z-index: 10;
+}
+
+.sk-chart-tooltip.visible {
+  opacity: 1;
+}
+
+.sk-chart-note {
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .sk-chart-label-row {

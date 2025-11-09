@@ -1,11 +1,4 @@
-import {
-	App,
-	ItemView,
-	Modal,
-	Notice,
-	Plugin,
-	WorkspaceLeaf,
-} from "obsidian";
+import { App, ItemView, Modal, Notice, Plugin, WorkspaceLeaf } from "obsidian";
 
 const VIEW_TYPE = "simple-kanban-sidebar-view";
 const ICON_ID = "layout-kanban";
@@ -68,6 +61,10 @@ interface StatsSnapshot {
 	dailySeries: DailyStatsPoint[];
 	dailyRates: DailyRatePoint[];
 }
+
+type StatsRange =
+	| { type: "preset"; days: number }
+	| { type: "custom"; start: number; end: number };
 
 const DEFAULT_COLUMNS = ["待处理", "进行中", "已完成"];
 type NullableTimeout = number | null;
@@ -343,6 +340,7 @@ class KanbanView extends ItemView {
 	private placeholderState?: { columnId: string; beforeId?: string };
 	private deadlineFilters = new Map<string, boolean>();
 	private activeTab: "board" | "stats" = "board";
+	private statsRange: StatsRange = { type: "preset", days: 14 };
 
 	constructor(leaf: WorkspaceLeaf, private plugin: SimpleKanbanPlugin) {
 		super(leaf);
@@ -428,9 +426,62 @@ class KanbanView extends ItemView {
 	}
 
 	private renderStats(body: HTMLElement) {
-		const stats = this.buildStatsSnapshot();
+		const stats = this.buildStatsSnapshot(this.statsRange);
+		console.log("[SimpleKanban][Stats] Snapshot", {
+			range: this.statsRange,
+			dailySeries: stats.dailySeries,
+			dailyRates: stats.dailyRates,
+		});
 
 		body.createEl("h2", { text: "效率统计", cls: "sk-stats-title" });
+		const rangeControls = body.createDiv({ cls: "sk-range-controls" });
+		rangeControls.createSpan({ text: "时间范围：" });
+		const select = rangeControls.createEl("select", { cls: "sk-range-select" }) as HTMLSelectElement;
+		const presetOptions: Record<string, number> = { "7天": 7, "14天": 14, "30天": 30, "90天": 90 };
+		Object.entries(presetOptions).forEach(([label, days]) => {
+			const option = select.createEl("option", { text: label, value: days.toString() });
+			if (this.statsRange.type === "preset" && this.statsRange.days === days) option.selected = true;
+		});
+		const customOption = select.createEl("option", { text: "自定义", value: "custom" });
+		if (this.statsRange.type === "custom") customOption.selected = true;
+
+		const customFields = rangeControls.createDiv({ cls: "sk-range-custom" });
+		const startInput = customFields.createEl("input", { type: "date" }) as HTMLInputElement;
+		const endInput = customFields.createEl("input", { type: "date" }) as HTMLInputElement;
+		const updateCustomInputs = () => {
+			if (this.statsRange.type === "custom") {
+				startInput.value = formatDateInputValue(this.statsRange.start);
+				endInput.value = formatDateInputValue(this.statsRange.end);
+				customFields.addClass("sk-range-custom-visible");
+			} else {
+				customFields.removeClass("sk-range-custom-visible");
+			}
+		};
+		updateCustomInputs();
+
+		select.addEventListener("change", () => {
+			if (select.value === "custom") {
+				const today = this.startOfDay(Date.now());
+				const defaultStart = today - 13 * 24 * 60 * 60 * 1000;
+				this.statsRange = { type: "custom", start: defaultStart, end: today };
+			} else {
+				this.statsRange = { type: "preset", days: Number(select.value) };
+			}
+			updateCustomInputs();
+			this.render();
+		});
+
+		const handleCustomChange = () => {
+			if (this.statsRange.type !== "custom") return;
+			const startTs = startInput.value ? this.startOfDay(new Date(startInput.value).getTime()) : null;
+			const endTs = endInput.value ? this.startOfDay(new Date(endInput.value).getTime()) : null;
+			if (startTs && endTs && startTs <= endTs) {
+				this.statsRange = { type: "custom", start: startTs, end: endTs };
+				this.render();
+			}
+		};
+		startInput.addEventListener("change", handleCustomChange);
+		endInput.addEventListener("change", handleCustomChange);
 
 		const dashboard = body.createDiv({ cls: "sk-stats-dashboard" });
 		this.renderStatCard(dashboard, "总任务", stats.totalTasks.toString(), "累计创建");
@@ -461,11 +512,11 @@ class KanbanView extends ItemView {
 		);
 
 		const chartSection = body.createDiv({ cls: "sk-stats-section" });
-		chartSection.createEl("h3", { text: "每日任务趋势（近14天）" });
+		chartSection.createEl("h3", { text: "每日任务趋势" });
 		this.renderDailyBarChart(chartSection, stats.dailySeries);
 
 		const rateSection = body.createDiv({ cls: "sk-stats-section" });
-		rateSection.createEl("h3", { text: "每日完成率（近14天）" });
+		rateSection.createEl("h3", { text: "每日完成率" });
 		this.renderDailyRateChart(rateSection, stats.dailyRates);
 
 		const deadlineSection = body.createDiv({ cls: "sk-stats-section" });
@@ -793,24 +844,51 @@ class KanbanView extends ItemView {
 	}
 
 	private renderDailyBarChart(container: HTMLElement, series: DailyStatsPoint[]) {
-		const chart = container.createDiv({ cls: "sk-chart sk-chart-bars" });
+		if (!series.length) {
+			container.createDiv({ cls: "sk-empty", text: "暂无数据" });
+			return;
+		}
+		const scroll = container.createDiv({ cls: "sk-chart-scroll" });
+		const chart = scroll.createDiv({ cls: "sk-chart sk-chart-bars" });
+		const tooltip = chart.createDiv({ cls: "sk-chart-tooltip" });
 		const maxValue = Math.max(
 			1,
 			...series.map((point) => Math.max(point.created, point.completed)),
 		);
 
+		const columnWidth = 36;
+		chart.style.minWidth = `${series.length * columnWidth}px`;
+
+		const hideTooltip = () => tooltip.removeClass("visible");
+
 		series.forEach((point) => {
 			const column = chart.createDiv({ cls: "sk-chart-col" });
 			const bars = column.createDiv({ cls: "sk-chart-col-bars" });
-			bars.createDiv({
+			const createdBar = bars.createDiv({
 				cls: "sk-chart-bar sk-chart-bar-created",
 				attr: { style: `height:${(point.created / maxValue) * 100}%` },
 			});
-			bars.createDiv({
+			const completedBar = bars.createDiv({
 				cls: "sk-chart-bar sk-chart-bar-completed",
 				attr: { style: `height:${(point.completed / maxValue) * 100}%` },
 			});
 			column.createDiv({ cls: "sk-chart-label", text: point.date.slice(5) });
+
+			const showTooltip = (evt: MouseEvent) => {
+				const target = evt.currentTarget as HTMLElement;
+				tooltip.setText(`${point.date} 新建 ${point.created} · 完成 ${point.completed}`);
+				tooltip.addClass("visible");
+				const bounds = chart.getBoundingClientRect();
+				const x = evt.clientX - bounds.left;
+				const y = evt.clientY - bounds.top - 20;
+				tooltip.style.left = `${x}px`;
+				tooltip.style.top = `${y}px`;
+			};
+			[createdBar, completedBar, column].forEach((el) => {
+				el.addEventListener("mouseenter", showTooltip);
+				el.addEventListener("mousemove", showTooltip);
+				el.addEventListener("mouseleave", hideTooltip);
+			});
 		});
 
 		const legend = container.createDiv({ cls: "sk-chart-legend" });
@@ -826,38 +904,98 @@ class KanbanView extends ItemView {
 	}
 
 	private renderDailyRateChart(container: HTMLElement, series: DailyRatePoint[]) {
-		const chartWrapper = container.createDiv({ cls: "sk-chart sk-chart-line" });
-		const width = Math.max(series.length - 1, 1) * 40;
+		console.log("[SimpleKanban][Stats] Rendering daily rate chart with", series.length, "points");
+		if (!series.length) {
+			container.createDiv({ cls: "sk-empty", text: "暂无完成率数据" });
+			console.log("[SimpleKanban][Stats] Daily rate chart has no data.");
+			return;
+		}
+		console.log("[SimpleKanban][Stats] Daily rate samples", series);
+
+		const scroll = container.createDiv({ cls: "sk-chart-scroll" });
+		const chartWrapper = scroll.createDiv({ cls: "sk-chart sk-chart-line" });
+		const minColumns = Math.max(series.length, 7);
+		const svgWidth = minColumns * 36;
+		const effectiveCount = Math.max(series.length, 2);
+		const columnWidth = 36;
+		const width = (effectiveCount - 1) * columnWidth;
+		const minWidth = Math.max(series.length * columnWidth, width + 24);
+		chartWrapper.style.minWidth = `${minWidth}px`;
 		const height = 160;
-		const svg = chartWrapper.createEl("svg", {
-			attr: { viewBox: `0 0 ${width} ${height}`, preserveAspectRatio: "none" },
+		const leftPad = 12;
+		const rightPad = 12;
+		const totalWidth = width + leftPad + rightPad;
+		const svg = createSvgElement("svg") as SVGSVGElement;
+		setSvgAttrs(svg, {
+			viewBox: `0 0 ${totalWidth} ${height}`,
+			preserveAspectRatio: "none",
+			width: String(totalWidth),
+			height: String(height),
 		});
-		const points = series
-			.map((point, index) => {
-				const x = (index / Math.max(series.length - 1, 1)) * width;
-				const y = height - (Math.min(point.rate, 100) / 100) * height;
-				return `${x},${y}`;
-			})
-			.join(" ");
-		svg.createEl("polyline", {
-			attr: {
-				points,
-				fill: "none",
-				stroke: "var(--interactive-accent)",
-				"stroke-width": "3",
-			},
+		chartWrapper.appendChild(svg);
+
+		const baseline = createSvgElement("line");
+		setSvgAttrs(baseline, {
+			x1: String(leftPad),
+			y1: String(height - 1),
+			x2: String(totalWidth - rightPad),
+			y2: String(height - 1),
+			stroke: "var(--background-modifier-border)",
+			"stroke-width": "1",
 		});
+		svg.appendChild(baseline);
+
+		const pointsData = series.map((point, index) => {
+			const x =
+				series.length === 1
+					? leftPad + width / 2
+					: leftPad + (index / (series.length - 1 || 1)) * width;
+			const clampedRate = Math.min(Math.max(point.rate, 0), 100);
+			const y = height - (clampedRate / 100) * (height - 20) - 10;
+			return { x, y, rate: clampedRate };
+		});
+		console.log("[SimpleKanban][Stats] Daily rate coordinates", pointsData);
+		const points = pointsData.map((p) => `${p.x},${p.y}`).join(" ");
+		const polyline = createSvgElement("polyline");
+		setSvgAttrs(polyline, {
+			points,
+			fill: "none",
+			stroke: "var(--interactive-accent)",
+			"stroke-width": "3",
+			"stroke-linecap": "round",
+			"stroke-linejoin": "round",
+		});
+		svg.appendChild(polyline);
+		const tooltip = chartWrapper.createDiv({ cls: "sk-chart-tooltip" });
+		const hideTooltip = () => tooltip.removeClass("visible");
+
 		series.forEach((point, index) => {
-			const dotX = (index / Math.max(series.length - 1, 1)) * width;
-			const dotY = height - (Math.min(point.rate, 100) / 100) * height;
-			svg.createEl("circle", {
-				attr: {
-					cx: dotX,
-					cy: dotY,
-					r: 3,
-					fill: "var(--interactive-accent)",
-				},
+			const dotX =
+				series.length === 1
+					? leftPad + width / 2
+					: leftPad + (index / (series.length - 1 || 1)) * width;
+			const clampedRate = Math.min(Math.max(point.rate, 0), 100);
+			const dotY = height - (clampedRate / 100) * (height - 20) - 10;
+			const circle = createSvgElement("circle");
+			setSvgAttrs(circle, {
+				cx: String(dotX),
+				cy: String(dotY),
+				r: "3",
+				fill: "var(--interactive-accent)",
 			});
+			svg.appendChild(circle);
+			const showTooltip = (evt: MouseEvent) => {
+				const bounds = chartWrapper.getBoundingClientRect();
+				const x = evt.clientX - bounds.left;
+				const y = evt.clientY - bounds.top - 20;
+				tooltip.setText(`${point.date} 完成率 ${point.rate.toFixed(1)}%`);
+				tooltip.addClass("visible");
+				tooltip.style.left = `${x}px`;
+				tooltip.style.top = `${y}px`;
+			};
+			circle.addEventListener("mouseenter", showTooltip);
+			circle.addEventListener("mousemove", showTooltip);
+			circle.addEventListener("mouseleave", hideTooltip);
 		});
 
 		const labels = chartWrapper.createDiv({ cls: "sk-chart-label-row" }) as HTMLDivElement;
@@ -894,7 +1032,7 @@ class KanbanView extends ItemView {
 		this.renderLegendItem(legend, "已/将逾期", "var(--color-red, #ff6b6b)");
 	}
 
-	private buildStatsSnapshot(): StatsSnapshot {
+	private buildStatsSnapshot(range: StatsRange): StatsSnapshot {
 		const board = this.plugin.getBoard();
 		const cards = board.columns.flatMap((col) => col.cards);
 		const totalTasks = cards.length;
@@ -927,8 +1065,8 @@ class KanbanView extends ItemView {
 			return total / finished.length;
 		})();
 
-		const dailyCreated = this.buildDailySeries(cards, "created");
-		const dailyCompleted = this.buildDailySeries(cards, "completed");
+		const dailyCreated = this.buildDailySeries(cards, "created", range);
+		const dailyCompleted = this.buildDailySeries(cards, "completed", range);
 		const dailySeries: DailyStatsPoint[] = dailyCreated.map((point, index) => ({
 			date: point.date,
 			created: point.value,
@@ -936,7 +1074,10 @@ class KanbanView extends ItemView {
 		}));
 		const dailyRates: DailyRatePoint[] = dailySeries.map((point) => ({
 			date: point.date,
-			rate: point.created ? Math.min(100, (point.completed / point.created) * 100) : 0,
+			rate:
+				point.created || point.completed
+					? Math.min(100, (point.completed / Math.max(point.created, point.completed, 1)) * 100)
+					: 0,
 		}));
 
 		return {
@@ -955,20 +1096,31 @@ class KanbanView extends ItemView {
 		};
 	}
 
-	private buildDailySeries(cards: KanbanCard[], kind: "created" | "completed", days = 14) {
+	private buildDailySeries(cards: KanbanCard[], kind: "created" | "completed", range: StatsRange) {
 		const msPerDay = 24 * 60 * 60 * 1000;
-		const today = this.startOfDay(Date.now());
-		const start = today - (days - 1) * msPerDay;
+		const { start, end } = this.resolveRange(range);
+		const days = Math.max(1, Math.round((end - start) / msPerDay) + 1);
 		const buckets = new Map<string, number>();
+		let processed = 0;
+		let outOfRange = 0;
+		let missing = 0;
 
 		for (const card of cards) {
 			const timestamp =
 				kind === "created"
 					? card.createdAt
 					: card.completedAt ?? (card.completed ? card.updatedAt : null);
-			if (!timestamp) continue;
+			if (!timestamp) {
+				missing++;
+				continue;
+			}
+			if (timestamp < start || timestamp > end) {
+				outOfRange++;
+				continue;
+			}
 			const key = this.toDayKey(timestamp);
 			buckets.set(key, (buckets.get(key) ?? 0) + 1);
+			processed++;
 		}
 
 		const series: DailyCountPoint[] = [];
@@ -977,7 +1129,29 @@ class KanbanView extends ItemView {
 			const key = this.toDayKey(dayTs);
 			series.push({ date: key, value: buckets.get(key) ?? 0 });
 		}
+		const label = kind === "created" ? "Created" : "Completed";
+		console.log(`[SimpleKanban][Stats] ${label} series stats`, {
+			rangeStart: new Date(start).toISOString().slice(0, 10),
+			rangeEnd: new Date(end).toISOString().slice(0, 10),
+			points: series.length,
+			processed,
+			outOfRange,
+			missing,
+		});
 		return series;
+	}
+
+	private resolveRange(range: StatsRange): { start: number; end: number } {
+		if (range.type === "custom") {
+			return {
+				start: this.startOfDay(range.start),
+				end: this.startOfDay(range.end),
+			};
+		}
+		const msPerDay = 24 * 60 * 60 * 1000;
+		const end = this.startOfDay(Date.now());
+		const start = end - (range.days - 1) * msPerDay;
+		return { start, end };
 	}
 
 	private toDayKey(timestamp: number): string {
@@ -1248,6 +1422,24 @@ function formatDuration(ms: number): string {
 		return remMinutes ? `${hours}小时${remMinutes}分` : `${hours}小时`;
 	}
 	return `${Math.max(minutes, 1)}分`;
+}
+
+function formatDateInputValue(timestamp: number): string {
+	const date = new Date(timestamp);
+	const y = date.getFullYear();
+	const m = String(date.getMonth() + 1).padStart(2, "0");
+	const d = String(date.getDate()).padStart(2, "0");
+	return `${y}-${m}-${d}`;
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function createSvgElement<T extends keyof SVGElementTagNameMap>(tag: T): SVGElementTagNameMap[T] {
+	return document.createElementNS(SVG_NS, tag);
+}
+
+function setSvgAttrs(el: Element, attrs: Record<string, string>) {
+	Object.entries(attrs).forEach(([key, value]) => el.setAttribute(key, value));
 }
 
 function createTextField(
