@@ -66,6 +66,16 @@ type StatsRange =
 	| { type: "preset"; days: number }
 	| { type: "custom"; start: number; end: number };
 
+type TimelineRangePreset = "today" | "yesterday" | "custom";
+
+interface TimelineEntry {
+	cardId: string;
+	cardTitle: string;
+	columnName: string;
+	timestamp: number;
+	text: string;
+}
+
 const DEFAULT_COLUMNS = ["待处理", "进行中", "已完成"];
 type NullableTimeout = number | null;
 
@@ -339,8 +349,10 @@ class KanbanView extends ItemView {
 	private placeholderEl?: HTMLElement;
 	private placeholderState?: { columnId: string; beforeId?: string };
 	private deadlineFilters = new Map<string, boolean>();
-	private activeTab: "board" | "stats" = "board";
+	private activeTab: "board" | "stats" | "timeline" = "board";
 	private statsRange: StatsRange = { type: "preset", days: 14 };
+	private timelinePreset: TimelineRangePreset = "today";
+	private timelineCustom?: { start: number; end: number };
 
 	constructor(leaf: WorkspaceLeaf, private plugin: SimpleKanbanPlugin) {
 		super(leaf);
@@ -374,12 +386,15 @@ class KanbanView extends ItemView {
 		const tabs = container.createDiv({ cls: "sk-tabs" });
 		this.renderTabButton(tabs, "board", "任务看板");
 		this.renderTabButton(tabs, "stats", "效率统计");
+		this.renderTabButton(tabs, "timeline", "时间轴");
 
 		const body = container.createDiv({ cls: "sk-tab-panel" });
 		if (this.activeTab === "board") {
 			this.renderBoard(body);
-		} else {
+		} else if (this.activeTab === "stats") {
 			this.renderStats(body);
+		} else {
+			this.renderTimeline(body);
 		}
 	}
 
@@ -522,6 +537,92 @@ class KanbanView extends ItemView {
 		const deadlineSection = body.createDiv({ cls: "sk-stats-section" });
 		deadlineSection.createEl("h3", { text: "截止任务概览" });
 		this.renderDeadlineBreakdown(deadlineSection, stats);
+	}
+
+	private renderTimeline(body: HTMLElement) {
+		const { start, end } = this.resolveTimelineRange();
+		const entries = this.buildTimelineEntries(start, end);
+
+		const header = body.createDiv({ cls: "sk-header" });
+		header.createEl("h2", { text: "时间轴" });
+		const controls = header.createDiv({ cls: "sk-timeline-controls" });
+		const presetSelect = controls.createEl("select") as HTMLSelectElement;
+		[
+			{ value: "today", label: "今天" },
+			{ value: "yesterday", label: "昨天" },
+			{ value: "custom", label: "自定义" },
+		].forEach((option) => {
+			const opt = presetSelect.createEl("option", { text: option.label, value: option.value });
+			if (this.timelinePreset === option.value) opt.selected = true;
+		});
+
+		const customWrapper = controls.createDiv({ cls: "sk-range-custom" });
+		const startInput = customWrapper.createEl("input", { type: "date" }) as HTMLInputElement;
+		const endInput = customWrapper.createEl("input", { type: "date" }) as HTMLInputElement;
+
+		const updateCustomInputs = () => {
+			if (this.timelinePreset === "custom" && this.timelineCustom) {
+				startInput.value = formatDateInputValue(this.timelineCustom.start);
+				endInput.value = formatDateInputValue(this.timelineCustom.end);
+				customWrapper.addClass("sk-range-custom-visible");
+			} else {
+				customWrapper.removeClass("sk-range-custom-visible");
+			}
+		};
+		updateCustomInputs();
+
+		const applyPreset = () => {
+			const value = presetSelect.value as TimelineRangePreset;
+			this.timelinePreset = value;
+			if (value === "today") {
+				const today = this.startOfDay(Date.now());
+				this.timelineCustom = { start: today, end: today };
+			} else if (value === "yesterday") {
+				const today = this.startOfDay(Date.now());
+				const yesterday = today - 24 * 60 * 60 * 1000;
+				this.timelineCustom = { start: yesterday, end: yesterday };
+			} else if (!this.timelineCustom) {
+				const today = this.startOfDay(Date.now());
+				this.timelineCustom = { start: today, end: today };
+			}
+			updateCustomInputs();
+			this.render();
+		};
+		presetSelect.addEventListener("change", applyPreset);
+
+		const handleCustomChange = () => {
+			if (this.timelinePreset !== "custom") return;
+			const startDate = startInput.value ? new Date(startInput.value).getTime() : null;
+			const endDate = endInput.value ? new Date(endInput.value).getTime() : null;
+			if (startDate && endDate && startDate <= endDate) {
+				this.timelineCustom = {
+					start: this.startOfDay(startDate),
+					end: this.startOfDay(endDate),
+				};
+				this.render();
+			}
+		};
+		startInput.addEventListener("change", handleCustomChange);
+		endInput.addEventListener("change", handleCustomChange);
+
+		if (!entries.length) {
+			body.createDiv({ cls: "sk-empty", text: "该时间范围内没有操作记录" });
+			return;
+		}
+
+		const timelineWrapper = body.createDiv({ cls: "sk-timeline-wrapper" });
+		const timeline = timelineWrapper.createDiv({ cls: "sk-timeline" });
+		entries.forEach((entry) => {
+			const row = timeline.createDiv({ cls: "sk-timeline-row" });
+			const timeBox = row.createDiv({ cls: "sk-timeline-timebox" });
+			timeBox.createDiv({ cls: "sk-timeline-date", text: formatDateOnly(entry.timestamp) });
+			timeBox.createDiv({ cls: "sk-timeline-time", text: formatTime(entry.timestamp) });
+			timeBox.setAttr("title", formatDate(entry.timestamp));
+			const marker = row.createDiv({ cls: "sk-timeline-marker" });
+			const content = row.createDiv({ cls: "sk-timeline-content" });
+			content.createDiv({ cls: "sk-timeline-card-title", text: entry.cardTitle });
+			content.createDiv({ cls: "sk-timeline-card-body", text: entry.text });
+		});
 	}
 
 	private renderColumn(wrapper: HTMLElement, column: KanbanColumn) {
@@ -1167,6 +1268,43 @@ class KanbanView extends ItemView {
 		date.setHours(0, 0, 0, 0);
 		return date.getTime();
 	}
+
+	private resolveTimelineRange(): { start: number; end: number } {
+		if (this.timelinePreset === "custom" && this.timelineCustom) {
+			return this.timelineCustom;
+		}
+		if (this.timelinePreset === "yesterday") {
+			const today = this.startOfDay(Date.now());
+			const yesterday = today - 24 * 60 * 60 * 1000;
+			return { start: yesterday, end: yesterday };
+		}
+		const today = this.startOfDay(Date.now());
+		return { start: today, end: today };
+	}
+
+	private buildTimelineEntries(start: number, end: number): TimelineEntry[] {
+		const board = this.plugin.getBoard();
+		const entries: TimelineEntry[] = [];
+		const startTs = this.startOfDay(start);
+		const endTs = this.startOfDay(end) + 24 * 60 * 60 * 1000 - 1;
+		for (const column of board.columns) {
+			for (const card of column.cards) {
+				if (!Array.isArray(card.history)) continue;
+				for (const item of card.history) {
+					if (!item.timestamp) continue;
+					if (item.timestamp < startTs || item.timestamp > endTs) continue;
+					entries.push({
+						cardId: card.id,
+						cardTitle: card.title,
+						columnName: column.name,
+						timestamp: item.timestamp,
+						text: item.remark || "更新",
+					});
+				}
+			}
+		}
+		return entries.sort((a, b) => a.timestamp - b.timestamp);
+	}
 }
 
 class CardModal extends Modal {
@@ -1397,6 +1535,21 @@ function formatDate(timestamp: number): string {
 	const hh = String(date.getHours()).padStart(2, "0");
 	const mm = String(date.getMinutes()).padStart(2, "0");
 	return `${y}-${m}-${d} ${hh}:${mm}`;
+}
+
+function formatTime(timestamp: number): string {
+	const date = new Date(timestamp);
+	const hh = String(date.getHours()).padStart(2, "0");
+	const mm = String(date.getMinutes()).padStart(2, "0");
+	return `${hh}:${mm}`;
+}
+
+function formatDateOnly(timestamp: number): string {
+	const date = new Date(timestamp);
+	const y = date.getFullYear();
+	const m = String(date.getMonth() + 1).padStart(2, "0");
+	const d = String(date.getDate()).padStart(2, "0");
+	return `${y}-${m}-${d}`;
 }
 
 function formatPercent(value: number, digits = 0): string {
