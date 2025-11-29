@@ -43,7 +43,7 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
   gap: 12px;
 }
 
@@ -366,7 +366,7 @@
 .sk-timeline {
   position: relative;
   margin-top: 8px;
-  padding: 0 0 24px 0;
+  padding: 0 0 24px 8px;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -374,20 +374,10 @@
   overflow-y: auto;
 }
 
-.sk-timeline::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: calc(120px + 8px);
-  width: 2px;
-  background: var(--background-modifier-border);
-}
-
 .sk-timeline-row {
   display: grid;
-  grid-template-columns: 120px 16px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: 120px 14px minmax(0, 1fr);
+  gap: 6px;
   align-items: flex-start;
   position: relative;
   padding: 0;
@@ -401,11 +391,12 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  user-select: text;
 }
 
 .sk-timeline-marker {
   position: relative;
-  width: 16px;
+  width: 14px;
   display: flex;
   justify-content: center;
   align-items: flex-start;
@@ -443,6 +434,7 @@
   color: var(--text-normal);
   border: 1px solid var(--background-modifier-border);
   min-width: 0;
+  user-select: text;
 }
 
 .sk-timeline-card-title {
@@ -579,6 +571,7 @@
   font-size: 11px;
   color: var(--text-muted);
   padding: 2px 0;
+  user-select: text;
 }
 
 .sk-field {
@@ -672,4 +665,22 @@
   font-size: 13px;
   color: var(--text-normal);
   margin-bottom: 12px;
+}
+.sk-timeline-marker::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 2px;
+  background: var(--background-modifier-border);
+  top: 0;
+  bottom: 0;
+}
+
+.sk-timeline-row:first-child .sk-timeline-marker::before {
+  top: 4px;
+}
+
+.sk-timeline-row:last-child .sk-timeline-marker::before {
+  bottom: 4px;
 }

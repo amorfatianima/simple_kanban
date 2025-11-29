@@ -353,6 +353,14 @@ class KanbanView extends ItemView {
 	private statsRange: StatsRange = { type: "preset", days: 14 };
 	private timelinePreset: TimelineRangePreset = "today";
 	private timelineCustom?: { start: number; end: number };
+	private lastScrollTop = 0;
+	private scrollTarget?: HTMLElement;
+	private outerScrollTarget?: HTMLElement;
+	private columnScroll = new Map<string, number>();
+	private scrollHandler = (evt: Event) => {
+		const target = (evt.target as HTMLElement) ?? this.scrollTarget ?? this.contentEl;
+		this.lastScrollTop = target.scrollTop;
+	};
 
 	constructor(leaf: WorkspaceLeaf, private plugin: SimpleKanbanPlugin) {
 		super(leaf);
@@ -376,10 +384,25 @@ class KanbanView extends ItemView {
 
 	async onClose() {
 		this.dragState = undefined;
+		this.teardownScrollTarget();
+		this.outerScrollTarget = undefined;
 	}
 
 	render() {
 		const container = this.contentEl;
+		const outer = this.findScrollParent(container);
+		const currentScroll = this.scrollTarget?.scrollTop ?? container.scrollTop;
+		const outerScroll = outer?.scrollTop ?? 0;
+		this.lastScrollTop = currentScroll;
+		const lastOuter = outerScroll;
+		console.log("[SimpleKanban][Scroll] before render", {
+			tab: this.activeTab,
+			saved: this.lastScrollTop,
+			current: currentScroll,
+			outer: lastOuter,
+		});
+		// Preserve scroll on column lists before we clear DOM.
+		this.captureColumnScroll();
 		container.empty();
 		container.addClass("sk-kanban");
 
@@ -396,6 +419,96 @@ class KanbanView extends ItemView {
 		} else {
 			this.renderTimeline(body);
 		}
+		this.setupScrollTarget(body);
+		this.restoreOuterScroll(outerScroll, outer);
+		// Restore per-column scroll positions after new DOM is ready.
+		this.restoreColumnScroll();
+	}
+
+	private setupScrollTarget(el: HTMLElement) {
+		this.teardownScrollTarget();
+		this.scrollTarget = el;
+		this.scrollTarget.addEventListener("scroll", this.scrollHandler, { passive: true });
+		const targetScroll = this.lastScrollTop;
+		console.log("[SimpleKanban][Scroll] setup", {
+			tab: this.activeTab,
+			targetScroll,
+			targetHeight: this.scrollTarget.scrollHeight,
+			targetClient: this.scrollTarget.clientHeight,
+		});
+		requestAnimationFrame(() => {
+			if (this.scrollTarget) {
+				this.scrollTarget.scrollTop = targetScroll;
+				console.log("[SimpleKanban][Scroll] after render", {
+					tab: this.activeTab,
+					restored: targetScroll,
+					actual: this.scrollTarget.scrollTop,
+					targetHeight: this.scrollTarget.scrollHeight,
+					targetClient: this.scrollTarget.clientHeight,
+					outer: this.outerScrollTarget?.scrollTop ?? 0,
+				});
+			}
+		});
+	}
+
+	private teardownScrollTarget() {
+		if (this.scrollTarget) {
+			this.scrollTarget.removeEventListener("scroll", this.scrollHandler);
+		}
+		this.scrollTarget = undefined;
+	}
+
+	private restoreOuterScroll(value: number, target?: HTMLElement) {
+		if (!target) return;
+		this.outerScrollTarget = target;
+		requestAnimationFrame(() => {
+			if (this.outerScrollTarget) {
+				this.outerScrollTarget.scrollTop = value;
+			}
+		});
+	}
+
+	private captureColumnScroll() {
+		const containers = Array.from(
+			this.contentEl.querySelectorAll<HTMLElement>(".sk-cards[data-column]"),
+		);
+		containers.forEach((el) => {
+			const columnId = el.getAttribute("data-column");
+			if (columnId) {
+				this.columnScroll.set(columnId, el.scrollTop);
+			}
+		});
+	}
+
+	private restoreColumnScroll() {
+		const containers = Array.from(
+			this.contentEl.querySelectorAll<HTMLElement>(".sk-cards[data-column]"),
+		);
+		containers.forEach((el) => {
+			const columnId = el.getAttribute("data-column");
+			if (!columnId) return;
+			const target = this.columnScroll.get(columnId) ?? 0;
+			el.scrollTop = target;
+			el.addEventListener(
+				"scroll",
+				(evt) => {
+					const targetEl = evt.target as HTMLElement;
+					this.columnScroll.set(columnId, targetEl.scrollTop);
+				},
+				{ passive: true },
+			);
+		});
+	}
+
+	private findScrollParent(el: HTMLElement): HTMLElement | null {
+		let node: HTMLElement | null = el;
+		while (node) {
+			if (node.scrollHeight > node.clientHeight + 4) {
+				return node;
+			}
+			node = node.parentElement;
+		}
+		return null;
 	}
 
 	private renderTabButton(container: HTMLElement, tab: "board" | "stats", label: string) {
@@ -819,6 +932,17 @@ class KanbanView extends ItemView {
 				historyHost.addClass("sk-history-hover");
 			}
 		});
+		const disableDrag = (evt: MouseEvent) => {
+			evt.stopPropagation();
+			cardEl.setAttr("draggable", "false");
+			const enable = () => {
+				cardEl.setAttr("draggable", "true");
+				document.removeEventListener("mouseup", enable);
+			};
+			document.addEventListener("mouseup", enable);
+		};
+		historyHost.addEventListener("mousedown", disableDrag);
+		popover.addEventListener("mousedown", disableDrag);
 
 		if (card.tags.length) {
 			const tagRow = cardEl.createDiv({ cls: "sk-card-tags" });
@@ -1097,6 +1221,35 @@ class KanbanView extends ItemView {
 			circle.addEventListener("mouseenter", showTooltip);
 			circle.addEventListener("mousemove", showTooltip);
 			circle.addEventListener("mouseleave", hideTooltip);
+		});
+
+		// Add wider hover hitboxes to make tooltip easier to trigger.
+		pointsData.forEach((point, index) => {
+			const prev = pointsData[index - 1];
+			const next = pointsData[index + 1];
+			const leftBound = prev ? (prev.x + point.x) / 2 : leftPad;
+			const rightBound = next ? (point.x + next.x) / 2 : totalWidth - rightPad;
+			const hitbox = createSvgElement("rect");
+			setSvgAttrs(hitbox, {
+				x: String(leftBound),
+				y: "0",
+				width: String(Math.max(4, rightBound - leftBound)),
+				height: String(height),
+				fill: "transparent",
+			});
+			const showTooltip = (evt: MouseEvent) => {
+				const bounds = chartWrapper.getBoundingClientRect();
+				const x = evt.clientX - bounds.left;
+				const y = evt.clientY - bounds.top - 20;
+				tooltip.setText(`${series[index].date} 完成率 ${series[index].rate.toFixed(1)}%`);
+				tooltip.addClass("visible");
+				tooltip.style.left = `${x}px`;
+				tooltip.style.top = `${y}px`;
+			};
+			hitbox.addEventListener("mouseenter", showTooltip);
+			hitbox.addEventListener("mousemove", showTooltip);
+			hitbox.addEventListener("mouseleave", hideTooltip);
+			svg.appendChild(hitbox);
 		});
 
 		const labels = chartWrapper.createDiv({ cls: "sk-chart-label-row" }) as HTMLDivElement;
