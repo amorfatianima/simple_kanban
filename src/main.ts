@@ -880,10 +880,6 @@ class KanbanView extends ItemView {
 		});
 
 		const titleEl = topRow.createDiv({ cls: "sk-card-title", text: card.title });
-		titleEl.addEventListener("click", () => {
-			this.plugin.setActiveColumn(column.id);
-			new CardModal(this.app, this.plugin, column.id, card).open();
-		});
 
 		const historyHost = cardEl.createDiv({ cls: "sk-history-host" });
 		const historyMarker = historyHost.createDiv({ cls: "sk-history-marker", text: "⏱" });
@@ -1548,10 +1544,10 @@ class CardModal extends Modal {
 			new Notice("标题不能为空");
 			return;
 		}
-		this.submitting = true;
 		const tags = parseTags(this.tagsValue);
 		const remark = this.remarkValue.trim();
 		const deadline = parseDateTimeInput(this.deadlineValue);
+		this.submitting = true;
 		try {
 			if (this.card) {
 				await this.plugin.updateCard(
@@ -1570,6 +1566,9 @@ class CardModal extends Modal {
 				});
 			}
 			this.close();
+		} catch (error) {
+			console.error("[SimpleKanban][CardModal] submit failed", error);
+			new Notice("保存失败，请重试");
 		} finally {
 			this.submitting = false;
 		}
