@@ -1,7 +1,7 @@
-import { App, ItemView, Modal, Notice, Plugin, WorkspaceLeaf } from "obsidian";
+import { App, ItemView, Modal, Notice, Plugin, WorkspaceLeaf, addIcon } from "obsidian";
 
 const VIEW_TYPE = "simple-kanban-sidebar-view";
-const ICON_ID = "layout-kanban";
+const ICON_ID = "simple-kanban-emoji";
 
 interface KanbanHistoryEntry {
 	timestamp: number;
@@ -96,6 +96,11 @@ export default class SimpleKanbanPlugin extends Plugin {
 
 	async onload() {
 		await this.loadBoard();
+
+		addIcon(
+			ICON_ID,
+			`<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><text x="12" y="16" font-size="14" text-anchor="middle">🗂️</text></svg>`,
+		);
 
 		this.registerView(VIEW_TYPE, (leaf) => {
 			const view = new KanbanView(leaf, this);
