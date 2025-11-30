@@ -99,7 +99,7 @@ export default class SimpleKanbanPlugin extends Plugin {
 
 		addIcon(
 			ICON_ID,
-			`<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><text x="12" y="16" font-size="14" text-anchor="middle">🗂️</text></svg>`,
+			`<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><text x="12" y="20" font-size="20" text-anchor="middle">🐯</text></svg>`,
 		);
 
 		this.registerView(VIEW_TYPE, (leaf) => {
