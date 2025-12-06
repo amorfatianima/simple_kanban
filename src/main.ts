@@ -362,6 +362,12 @@ class KanbanView extends ItemView {
 	private scrollTarget?: HTMLElement;
 	private outerScrollTarget?: HTMLElement;
 	private columnScroll = new Map<string, number>();
+	private boardSearch = "";
+	private timelineSearch = "";
+	private lastFocusedSearchTab: "board" | "timeline" | null = null;
+	private lastSearchSelection?: { start: number; end: number };
+	private isBoardComposing = false;
+	private isTimelineComposing = false;
 	private scrollHandler = (evt: Event) => {
 		const target = (evt.target as HTMLElement) ?? this.scrollTarget ?? this.contentEl;
 		this.lastScrollTop = target.scrollTop;
@@ -516,6 +522,17 @@ class KanbanView extends ItemView {
 		return null;
 	}
 
+	private restoreSearchFocus(tab: "board" | "timeline", input: HTMLInputElement) {
+		if (this.lastFocusedSearchTab !== tab) return;
+		const selection = this.lastSearchSelection;
+		requestAnimationFrame(() => {
+			input.focus({ preventScroll: true });
+			if (selection) {
+				input.setSelectionRange(selection.start, selection.end);
+			}
+		});
+	}
+
 	private renderTabButton(container: HTMLElement, tab: "board" | "stats", label: string) {
 		const button = container.createEl("button", {
 			text: label,
@@ -530,9 +547,46 @@ class KanbanView extends ItemView {
 
 	private renderBoard(body: HTMLElement) {
 		const board = this.plugin.getBoard();
+		const searchValue = this.boardSearch;
+		const filteredColumns = board.columns.map((col) => ({
+			...col,
+			cards: this.filterCards(col.cards, searchValue),
+		}));
+		const totalCards = filteredColumns.reduce((sum, col) => sum + col.cards.length, 0);
 
 		const header = body.createDiv({ cls: "sk-header" });
-		header.createEl("h2", { text: "侧边看板" });
+		header.createEl("h2", { text: `侧边看板（${totalCards}）` });
+		const searchBox = header.createDiv({ cls: "sk-search" });
+		const searchInput = searchBox.createEl("input", {
+			type: "search",
+			placeholder: "搜索标题/备注/标签/历史…",
+			value: searchValue,
+		}) as HTMLInputElement;
+		searchInput.addEventListener("compositionstart", () => {
+			this.isBoardComposing = true;
+		});
+		searchInput.addEventListener("compositionend", () => {
+			this.isBoardComposing = false;
+			this.boardSearch = searchInput.value;
+			this.lastFocusedSearchTab = "board";
+			this.lastSearchSelection = {
+				start: searchInput.selectionStart ?? searchInput.value.length,
+				end: searchInput.selectionEnd ?? searchInput.value.length,
+			};
+			this.render();
+		});
+		searchInput.addEventListener("input", () => {
+			this.boardSearch = searchInput.value;
+			if (this.isBoardComposing) return;
+			this.lastFocusedSearchTab = "board";
+			this.lastSearchSelection = {
+				start: searchInput.selectionStart ?? searchInput.value.length,
+				end: searchInput.selectionEnd ?? searchInput.value.length,
+			};
+			this.render();
+		});
+		this.restoreSearchFocus("board", searchInput);
+
 		const addColumnBtn = header.createEl("button", {
 			text: "新增栏目",
 			cls: "sk-btn",
@@ -553,7 +607,7 @@ class KanbanView extends ItemView {
 			return;
 		}
 
-		for (const column of board.columns) {
+		for (const column of filteredColumns) {
 			this.renderColumn(columnsWrapper, column);
 		}
 	}
@@ -659,10 +713,16 @@ class KanbanView extends ItemView {
 
 	private renderTimeline(body: HTMLElement) {
 		const { start, end } = this.resolveTimelineRange();
-		const entries = this.buildTimelineEntries(start, end);
+		const searchValue = this.timelineSearch;
+		const entries = this.buildTimelineEntries(start, end).filter((entry) =>
+			this.matchesSearchText(
+				searchValue,
+				[entry.cardTitle, entry.text].join(" "),
+			),
+		);
 
 		const header = body.createDiv({ cls: "sk-header" });
-		header.createEl("h2", { text: "时间轴" });
+		header.createEl("h2", { text: `时间轴（${entries.length}）` });
 		const controls = header.createDiv({ cls: "sk-timeline-controls" });
 		const presetSelect = controls.createEl("select") as HTMLSelectElement;
 		[
@@ -673,6 +733,37 @@ class KanbanView extends ItemView {
 			const opt = presetSelect.createEl("option", { text: option.label, value: option.value });
 			if (this.timelinePreset === option.value) opt.selected = true;
 		});
+
+		const searchBox = header.createDiv({ cls: "sk-search" });
+		const searchInput = searchBox.createEl("input", {
+			type: "search",
+			placeholder: "搜索标题/内容",
+			value: searchValue,
+		}) as HTMLInputElement;
+		searchInput.addEventListener("compositionstart", () => {
+			this.isTimelineComposing = true;
+		});
+		searchInput.addEventListener("compositionend", () => {
+			this.isTimelineComposing = false;
+			this.timelineSearch = searchInput.value;
+			this.lastFocusedSearchTab = "timeline";
+			this.lastSearchSelection = {
+				start: searchInput.selectionStart ?? searchInput.value.length,
+				end: searchInput.selectionEnd ?? searchInput.value.length,
+			};
+			this.render();
+		});
+		searchInput.addEventListener("input", () => {
+			this.timelineSearch = searchInput.value;
+			if (this.isTimelineComposing) return;
+			this.lastFocusedSearchTab = "timeline";
+			this.lastSearchSelection = {
+				start: searchInput.selectionStart ?? searchInput.value.length,
+				end: searchInput.selectionEnd ?? searchInput.value.length,
+			};
+			this.render();
+		});
+		this.restoreSearchFocus("timeline", searchInput);
 
 		const customWrapper = controls.createDiv({ cls: "sk-range-custom" });
 		const startInput = customWrapper.createEl("input", { type: "date" }) as HTMLInputElement;
@@ -1258,6 +1349,26 @@ class KanbanView extends ItemView {
 		series.forEach((point) => {
 			labels.createDiv({ cls: "sk-chart-label", text: point.date.slice(5) });
 		});
+	}
+
+	private filterCards(cards: KanbanCard[], search: string): KanbanCard[] {
+		if (!search.trim()) return cards;
+		return cards.filter((card) => {
+			const text = [
+				card.title,
+				card.remark,
+				card.tags.join(" "),
+				...(Array.isArray(card.history)
+					? card.history.map((h) => h.remark || "").filter(Boolean)
+					: []),
+			].join(" ");
+			return this.matchesSearchText(search, text);
+		});
+	}
+
+	private matchesSearchText(search: string, text: string): boolean {
+		if (!search.trim()) return true;
+		return text.toLowerCase().includes(search.toLowerCase());
 	}
 
 	private renderDeadlineBreakdown(container: HTMLElement, stats: StatsSnapshot) {
