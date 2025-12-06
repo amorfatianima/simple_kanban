@@ -553,9 +553,13 @@ class KanbanView extends ItemView {
 			cards: this.filterCards(col.cards, searchValue),
 		}));
 		const totalCards = filteredColumns.reduce((sum, col) => sum + col.cards.length, 0);
+		const openCards = filteredColumns.reduce(
+			(sum, col) => sum + col.cards.filter((c) => !c.completed).length,
+			0,
+		);
 
 		const header = body.createDiv({ cls: "sk-header" });
-		header.createEl("h2", { text: `侧边看板（${totalCards}）` });
+		header.createEl("h2", { text: `侧边看板（${openCards}/${totalCards}）` });
 		const searchBox = header.createDiv({ cls: "sk-search" });
 		const searchInput = searchBox.createEl("input", {
 			type: "search",
